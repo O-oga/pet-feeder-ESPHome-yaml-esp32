@@ -25,8 +25,11 @@ _All features and hardware options are defined in the YAML file. Customize to fi
 
 ### 1. **Hardware Needed**
 - ESP32 development board
-- Motor/servo for food dispensing
+- Motor/servo for food dispensing (SM-S4303R)
 - Feeding button for pet-initiated feeding
+- type-c port
+- 3 micro switches (optional)
+- DC connectors for a button (optional)
 - [Printed case](https://www.printables.com/model/872397-pet-feeder)
 
 ### 2. **Setup Steps**
