@@ -11,7 +11,7 @@ A ready-to-use YAML configuration to build a smart pet feeder with an ESP32 boar
 ## 🚀 Features
 - **Self-Feeding:** Your pet can independently trigger feeding by pressing a physical button on the feeder.
 - **Manual Feeding:** Instantly trigger feedings via Home Assistant or a physical button.
-- **Feeding:** No built-in feeding timer, but feeding can be triggered via Home Assistant automations or schedules.
+- **Automatic Feeding:** No built-in feeding timer, but feeding can be triggered via Home Assistant automations or schedules.
 - **Portion Control:** Dispense a set amount of food with each feeding.
 - **Status Monitoring:** Track feeding events, errors, and device status.
 - **Sensor Integration:** Support for weight sensors, limit switches, and more (configurable).
