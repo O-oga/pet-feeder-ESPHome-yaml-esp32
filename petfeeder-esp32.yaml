@@ -10,13 +10,13 @@ substitutions:
   wifi_password: "yourpass"
   api_key: "yourkey"
   
-  serving_time: "800.0"
+  serving_time: "1000.0"
   
-  base_period: "600.0"
+  base_period: "100.0"
  
-  jerk_duration: "130.0"
+  jerk_duration: "170.0"
   
-  jerk_interval: "130.0"
+  jerk_interval: "150.0"
  
   min_interval_sec: "5"
  
@@ -253,7 +253,7 @@ script:
             entity_id: input_number.feedings_count
             value: !lambda 'return id(times24h);'
       - lambda: |-
-          float grams = id(serving_time).state * 9.0f / 1000.0f;
+          float grams = id(serving_time).state * 14.5f / 1000.0f;
           id(last_food_weight) += grams;
       - homeassistant.service:
           service: input_number.set_value
