@@ -1,0 +1,278 @@
+esphome:
+  name: yourname
+  friendly_name: yourname
+  min_version: 2025.5.0
+  name_add_mac_suffix: false 
+
+
+substitutions:
+  wifi_ssid: "yourname"
+  wifi_password: "yourpass"
+  api_key: "yourkey"
+  
+  serving_time: "800.0"
+  
+  base_period: "600.0"
+ 
+  jerk_duration: "130.0"
+  
+  jerk_interval: "130.0"
+ 
+  min_interval_sec: "5"
+ 
+  window_10m_sec: "1"
+  window_24h_sec: "86400"
+  max_10m: "2"
+  max_24h: "6"
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+wifi:
+  ssid: ${wifi_ssid}
+  password: ${wifi_password}
+
+logger:
+  level: DEBUG
+
+api:
+  encryption:
+    key: ${api_key}
+
+ota:
+  platform: esphome
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO4
+      mode: INPUT_PULLUP
+      inverted: true
+    id: feed_button_hw
+    name: "Feed Button"
+    on_press:
+      - script.execute: feed_if_allowed
+
+  - platform: gpio
+    pin:
+      number: GPIO17
+      mode: INPUT_PULLUP
+      inverted: true
+    id: plus_button_hw
+    internal: true
+    on_press:
+      - number.increment: serving_time
+
+  - platform: gpio
+    pin:
+      number: GPIO18
+      mode: INPUT_PULLUP
+      inverted: true
+    id: minus_button_hw
+    internal: true
+    on_press:
+      - number.decrement: serving_time
+
+button:
+  - platform: template
+    name: "Feed Button"
+    id: feed_button
+    on_press:
+      - script.execute: feed_if_allowed
+
+  - platform: template
+    name: "Reset Food Weight"
+    on_press:
+      - script.execute: reset_food_weight
+
+  - platform: template
+    name: "Increase Portion"
+    icon: "mdi:plus-circle-outline"
+    on_press:
+      - number.increment: serving_time
+
+  - platform: template
+    name: "Decrease Portion"
+    icon: "mdi:minus-circle-outline"
+    on_press:
+      - number.decrement: serving_time
+
+output:
+  - platform: ledc
+    id: servo_pwm
+    pin: GPIO14
+    frequency: 50 Hz
+
+servo:
+  - id: feeder_servo
+    output: servo_pwm
+    auto_detach_time: 5s
+    min_level: 3%
+    idle_level: 7.5%
+    max_level: 12%
+
+number:
+  - platform: template
+    id: serving_time
+    name: "Portion time, ms"
+    min_value: 100
+    max_value: 4000
+    step: 100
+    initial_value: ${serving_time}
+    restore_value: true
+    optimistic: true
+
+  - platform: template
+    id: jerk_period
+    name: "Jerk period, ms"
+    min_value: 100
+    max_value: 5000
+    step: 50
+    initial_value: ${base_period}
+    restore_value: true
+    optimistic: true
+
+  - platform: template
+    id: jerk_duration
+    name: "Jerk duration, ms"
+    min_value: 50
+    max_value: 500
+    step: 10
+    initial_value: ${jerk_duration}
+    restore_value: true
+    optimistic: true
+
+  - platform: template
+    id: jerk_interval
+    name: "Jerk interval, ms"
+    min_value: 50
+    max_value: 500
+    step: 10
+    initial_value: ${jerk_interval}
+    restore_value: true
+    optimistic: true
+
+globals:
+  - id: times10m
+    type: int
+    initial_value: '0'
+  - id: times24h
+    type: int
+    initial_value: '0'
+  - id: last_feed_sec
+    type: uint32_t
+    initial_value: '0'
+  - id: last_food_weight
+    type: float
+    restore_value: true
+    initial_value: '0.0'
+  - id: feedings_count
+    type: int
+    restore_value: true
+    initial_value: '0'
+  - id: dispense_elapsed
+    type: int
+    initial_value: '0'
+
+script:
+  - id: dispense
+    parameters:
+      ms: int  
+    then:
+      - logger.log:
+          format: "Dispense start: %d ms"
+          args: ['ms']
+      
+      - globals.set:
+          id: dispense_elapsed
+          value: '0'
+      
+      - while:
+          condition:
+            lambda: |-
+              return id(dispense_elapsed) < ms;
+          then:
+            
+            - lambda: |-
+                {
+                  int remaining = ms - id(dispense_elapsed);
+                  int seg = min((int)id(jerk_period).state, remaining);
+                  id(feeder_servo).write(1.0f);
+                  id(dispense_elapsed) += seg;
+                }
+            - delay: !lambda 'return min((int)id(jerk_period).state, ms - id(dispense_elapsed));'
+            
+            - lambda: |-
+                if (id(dispense_elapsed) >= ms) return;
+                id(feeder_servo).write(-1.0f);
+                id(dispense_elapsed) += id(jerk_duration).state;
+            - delay: !lambda 'return id(jerk_duration).state;'
+            - lambda: |-
+                id(feeder_servo).write(1.0f);
+                id(dispense_elapsed) += id(jerk_interval).state;
+            - delay: !lambda 'return id(jerk_interval).state;'
+      
+      - servo.write:
+          id: feeder_servo
+          level: 0.0
+      - delay: 100ms
+  
+  - id: feed_if_allowed
+    mode: restart
+    then:
+      - lambda: |-
+          auto now = id(ha_time).now();
+          if (!now.is_valid()) return;
+          uint32_t ts = now.timestamp;
+          
+          if (ts - id(last_feed_sec) < atoi("${min_interval_sec}")) return;
+          
+          if (ts - id(last_feed_sec) > atoi("${window_10m_sec}")) id(times10m) = 0;
+          if (ts - id(last_feed_sec) > atoi("${window_24h_sec}")) id(times24h) = 0;
+          
+          if (id(times10m) >= atoi("${max_10m}")) return;
+          if (id(times24h) >= atoi("${max_24h}")) return;
+          
+          id(last_feed_sec) = ts;
+          id(times10m)++;
+          id(times24h)++;
+          id(feedings_count)++;
+      - script.execute:
+          id: dispense
+          ms: !lambda 'return (int)round(id(serving_time).state);'
+      # update Home Assistant data 
+      - homeassistant.service:
+          service: input_number.set_value
+          data:
+            entity_id: input_number.feedings_count
+            value: !lambda 'return id(times24h);'
+      - lambda: |-
+          float grams = id(serving_time).state * 9.0f / 1000.0f;
+          id(last_food_weight) += grams;
+      - homeassistant.service:
+          service: input_number.set_value
+          data:
+            entity_id: input_number.total_food_weight
+            value: !lambda 'return id(last_food_weight);'
+
+  - id: reset_food_weight
+    then:
+      - lambda: |-
+          id(last_food_weight) = 0.0f;
+          id(feedings_count) = 0.0f;
+      - homeassistant.service:
+          service: input_number.set_value
+          data:
+            entity_id: input_number.total_food_weight
+            value: '0'
+      - homeassistant.service:
+          service: input_number.set_value
+          data:
+            entity_id: input_number.feedings_count
+            value: '0'
