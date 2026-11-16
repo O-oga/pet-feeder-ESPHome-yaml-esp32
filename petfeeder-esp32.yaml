@@ -10,17 +10,12 @@ substitutions:
   wifi_password: "yourpass"
   api_key: "yourkey"
   
-  serving_time: "1000.0"
-  
-  base_period: "100.0"
- 
-  jerk_duration: "170.0"
-  
-  jerk_interval: "150.0"
- 
+  serving_time: "1000"
+  base_period: "100"
+  jerk_duration: "170"
+  jerk_interval: "150"
   min_interval_sec: "5"
- 
-  window_10m_sec: "1"
+  window_10m_sec: "600"
   window_24h_sec: "86400"
   max_10m: "2"
   max_24h: "6"
@@ -56,6 +51,8 @@ binary_sensor:
       inverted: true
     id: feed_button_hw
     name: "Feed Button"
+    filters:
+      - delayed_on: 30ms
     on_press:
       - script.execute: feed_if_allowed
 
@@ -66,6 +63,8 @@ binary_sensor:
       inverted: true
     id: plus_button_hw
     internal: true
+    filters:
+      - delayed_on: 30ms
     on_press:
       - number.increment: serving_time
 
@@ -76,6 +75,8 @@ binary_sensor:
       inverted: true
     id: minus_button_hw
     internal: true
+    filters:
+      - delayed_on: 30ms
     on_press:
       - number.decrement: serving_time
 
@@ -158,15 +159,77 @@ number:
     restore_value: true
     optimistic: true
 
+  - platform: template
+    id: feed_limit_10m
+    name: "Max feedings per 10 min"
+    icon: "mdi:counter"
+    entity_category: config
+    mode: slider
+    min_value: 1
+    max_value: 20
+    step: 1
+    initial_value: ${max_10m}
+    restore_value: true
+    optimistic: true
+    on_value:
+      then:
+        - lambda: |-
+            ESP_LOGI("feeder", "10-minute feeding limit changed to %d", (int) x);
+
+  - platform: template
+    id: feed_limit_24h
+    name: "Max feedings per 24 h"
+    icon: "mdi:counter"
+    entity_category: config
+    mode: slider
+    min_value: 1
+    max_value: 50
+    step: 1
+    initial_value: ${max_24h}
+    restore_value: true
+    optimistic: true
+    on_value:
+      then:
+        - lambda: |-
+            ESP_LOGI("feeder", "24-hour feeding limit changed to %d", (int) x);
+
+  - platform: template
+    id: feed_min_interval
+    name: "Minimum feeding interval"
+    icon: "mdi:timer-outline"
+    entity_category: config
+    unit_of_measurement: "s"
+    mode: slider
+    min_value: 5
+    max_value: 300
+    step: 1
+    initial_value: ${min_interval_sec}
+    restore_value: true
+    optimistic: true
+    on_value:
+      then:
+        - lambda: |-
+            ESP_LOGI("feeder", "Minimum feeding interval changed to %d s", (int) x);
 globals:
   - id: times10m
     type: int
+    restore_value: true
     initial_value: '0'
   - id: times24h
     type: int
+    restore_value: true
+    initial_value: '0'
+  - id: window10_start
+    type: uint32_t
+    restore_value: true
+    initial_value: '0'
+  - id: window24_start
+    type: uint32_t
+    restore_value: true
     initial_value: '0'
   - id: last_feed_sec
     type: uint32_t
+    restore_value: true
     initial_value: '0'
   - id: last_food_weight
     type: float
@@ -176,103 +239,222 @@ globals:
     type: int
     restore_value: true
     initial_value: '0'
-  - id: dispense_elapsed
+  - id: portion_ms
+    type: int
+    initial_value: '0'
+  - id: forward_left_ms
+    type: int
+    initial_value: '0'
+  - id: phase_ms
     type: int
     initial_value: '0'
 
 script:
   - id: dispense
+    mode: single
     parameters:
-      ms: int  
+      ms: int
     then:
-      - logger.log:
-          format: "Dispense start: %d ms"
-          args: ['ms']
-      
-      - globals.set:
-          id: dispense_elapsed
-          value: '0'
-      
+      - lambda: |-
+          id(forward_left_ms) = ms;
+          ESP_LOGI("feeder", "Dispense: %d ms forward budget", ms);
       - while:
           condition:
-            lambda: |-
-              return id(dispense_elapsed) < ms;
+            lambda: 'return id(forward_left_ms) > 0;'
           then:
-            
             - lambda: |-
-                {
-                  int remaining = ms - id(dispense_elapsed);
-                  int seg = min((int)id(jerk_period).state, remaining);
-                  id(feeder_servo).write(1.0f);
-                  id(dispense_elapsed) += seg;
-                }
-            - delay: !lambda 'return min((int)id(jerk_period).state, ms - id(dispense_elapsed));'
-            
-            - lambda: |-
-                if (id(dispense_elapsed) >= ms) return;
-                id(feeder_servo).write(-1.0f);
-                id(dispense_elapsed) += id(jerk_duration).state;
-            - delay: !lambda 'return id(jerk_duration).state;'
-            - lambda: |-
+                id(phase_ms) = std::min((int) id(jerk_period).state,
+                                        id(forward_left_ms));
                 id(feeder_servo).write(1.0f);
-                id(dispense_elapsed) += id(jerk_interval).state;
-            - delay: !lambda 'return id(jerk_interval).state;'
-      
+            - delay: !lambda 'return id(phase_ms);'
+            - lambda: |-
+                id(forward_left_ms) -= id(phase_ms);
+            - if:
+                condition:
+                  lambda: 'return id(forward_left_ms) > 0;'
+                then:
+                  - servo.write:
+                      id: feeder_servo
+                      level: -100%
+                  - delay: !lambda 'return (int) id(jerk_duration).state;'
+                  - lambda: |-
+                      id(phase_ms) = std::min((int) id(jerk_interval).state,
+                                              id(forward_left_ms));
+                      id(feeder_servo).write(1.0f);
+                  - delay: !lambda 'return id(phase_ms);'
+                  - lambda: |-
+                      id(forward_left_ms) -= id(phase_ms);
       - servo.write:
           id: feeder_servo
-          level: 0.0
+          level: 0%
       - delay: 100ms
-  
-  - id: feed_if_allowed
-    mode: restart
-    then:
+      - servo.detach: feeder_servo
+
       - lambda: |-
-          auto now = id(ha_time).now();
-          if (!now.is_valid()) return;
-          uint32_t ts = now.timestamp;
-          
-          if (ts - id(last_feed_sec) < atoi("${min_interval_sec}")) return;
-          
-          if (ts - id(last_feed_sec) > atoi("${window_10m_sec}")) id(times10m) = 0;
-          if (ts - id(last_feed_sec) > atoi("${window_24h_sec}")) id(times24h) = 0;
-          
-          if (id(times10m) >= atoi("${max_10m}")) return;
-          if (id(times24h) >= atoi("${max_24h}")) return;
-          
-          id(last_feed_sec) = ts;
-          id(times10m)++;
-          id(times24h)++;
-          id(feedings_count)++;
-      - script.execute:
-          id: dispense
-          ms: !lambda 'return (int)round(id(serving_time).state);'
-      # update Home Assistant data 
-      - homeassistant.service:
-          service: input_number.set_value
+          id(last_food_weight) += ms * 14.5f / 1000.0f;
+          ESP_LOGI("feeder",
+                   "Dispense finished: estimated total food weight=%.1f g",
+                   id(last_food_weight));
+
+      - homeassistant.action:
+          action: input_number.set_value
           data:
             entity_id: input_number.feedings_count
-            value: !lambda 'return id(times24h);'
-      - lambda: |-
-          float grams = id(serving_time).state * 14.5f / 1000.0f;
-          id(last_food_weight) += grams;
-      - homeassistant.service:
-          service: input_number.set_value
+          data_template:
+            value: "{{ count }}"
+          variables:
+            count: !lambda 'return id(feedings_count);'
+
+      - homeassistant.action:
+          action: input_number.set_value
           data:
             entity_id: input_number.total_food_weight
-            value: !lambda 'return id(last_food_weight);'
+          data_template:
+            value: "{{ weight }}"
+          variables:
+            weight: !lambda 'return id(last_food_weight);'
+            
+  - id: feed_if_allowed
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: |-
+              if (id(dispense).is_running()) {
+                ESP_LOGW("feeder",
+                         "Feed rejected: dispenser is already running");
+                return false;
+              }
 
+              auto now = id(ha_time).now();
+              if (!now.is_valid()) {
+                ESP_LOGW("feeder",
+                         "Feed rejected: time not synchronized with Home Assistant");
+                return false;
+              }
+
+              if (isnan(id(feed_limit_10m).state) ||
+                  isnan(id(feed_limit_24h).state) ||
+                  isnan(id(feed_min_interval).state)) {
+                ESP_LOGW("feeder",
+                         "Feed rejected: limit settings are not initialized");
+                return false;
+              }
+
+              const uint32_t ts = now.timestamp;
+
+              const int limit10 = (int) id(feed_limit_10m).state;
+              const int limit24 = (int) id(feed_limit_24h).state;
+              const uint32_t min_interval =
+                  (uint32_t) id(feed_min_interval).state;
+
+              const uint32_t window10 =
+                  (uint32_t) atoi("${window_10m_sec}");
+              const uint32_t window24 =
+                  (uint32_t) atoi("${window_24h_sec}");
+
+              if (id(last_feed_sec) != 0) {
+                if (ts < id(last_feed_sec)) {
+                  ESP_LOGW("feeder",
+                           "Feed rejected: current time is before last feeding");
+                  return false;
+                }
+
+                const uint32_t elapsed = ts - id(last_feed_sec);
+
+                if (elapsed < min_interval) {
+                  ESP_LOGW("feeder",
+                           "Feed rejected: minimum interval %u s, wait %u s",
+                           (unsigned) min_interval,
+                           (unsigned) (min_interval - elapsed));
+                  return false;
+                }
+              }
+
+              if ((id(window10_start) != 0 &&
+                   ts < id(window10_start)) ||
+                  (id(window24_start) != 0 &&
+                   ts < id(window24_start))) {
+                ESP_LOGW("feeder",
+                         "Feed rejected: current time is before saved limit window");
+                return false;
+              }
+
+              const bool in10 =
+                  id(window10_start) != 0 &&
+                  ts - id(window10_start) < window10;
+
+              const bool in24 =
+                  id(window24_start) != 0 &&
+                  ts - id(window24_start) < window24;
+
+              if (in10 && id(times10m) >= limit10) {
+                ESP_LOGW("feeder",
+                         "Feed rejected: 10-minute limit reached (%d/%d), wait %u s",
+                         id(times10m), limit10,
+                         (unsigned) (window10 -
+                                     (ts - id(window10_start))));
+                return false;
+              }
+
+              if (in24 && id(times24h) >= limit24) {
+                ESP_LOGW("feeder",
+                         "Feed rejected: 24-hour limit reached (%d/%d), wait %u s",
+                         id(times24h), limit24,
+                         (unsigned) (window24 -
+                                     (ts - id(window24_start))));
+                return false;
+              }
+
+              return true;
+
+          then:
+            - lambda: |-
+                const uint32_t ts = id(ha_time).now().timestamp;
+
+                if (id(window10_start) == 0 ||
+                    ts - id(window10_start) >=
+                        (uint32_t) atoi("${window_10m_sec}")) {
+                  id(window10_start) = ts;
+                  id(times10m) = 0;
+                }
+
+                if (id(window24_start) == 0 ||
+                    ts - id(window24_start) >=
+                        (uint32_t) atoi("${window_24h_sec}")) {
+                  id(window24_start) = ts;
+                  id(times24h) = 0;
+                }
+
+                id(last_feed_sec) = ts;
+                id(times10m)++;
+                id(times24h)++;
+                id(feedings_count)++;
+                id(portion_ms) = (int) id(serving_time).state;
+
+                ESP_LOGI("feeder",
+                         "Feed allowed: portion=%d ms, 10min=%d/%d, 24h=%d/%d",
+                         id(portion_ms),
+                         id(times10m), (int) id(feed_limit_10m).state,
+                         id(times24h), (int) id(feed_limit_24h).state);
+
+            - script.execute:
+                id: dispense
+                ms: !lambda 'return id(portion_ms);'
+  
   - id: reset_food_weight
+    mode: single
     then:
       - lambda: |-
           id(last_food_weight) = 0.0f;
-          id(feedings_count) = 0.0f;
-      - homeassistant.service:
-          service: input_number.set_value
+          id(feedings_count) = 0;
+      - homeassistant.action:
+          action: input_number.set_value
           data:
             entity_id: input_number.total_food_weight
             value: '0'
-      - homeassistant.service:
-          service: input_number.set_value
+      - homeassistant.action:
+          action: input_number.set_value
           data:
             entity_id: input_number.feedings_count
             value: '0'
